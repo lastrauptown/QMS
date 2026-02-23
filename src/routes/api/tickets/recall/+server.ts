@@ -1,22 +1,9 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { createClient } from '@supabase/supabase-js';
-import { PUBLIC_SUPABASE_URL } from '$env/static/public';
-import { SUPABASE_SERVICE_ROLE_KEY } from '$env/static/private';
+import { db } from '$lib/server/db';
 
 export const POST: RequestHandler = async ({ request }) => {
 	try {
-		if (!SUPABASE_SERVICE_ROLE_KEY) {
-			return json({ error: 'Service role key not configured' }, { status: 500 });
-		}
-
-		const adminClient = createClient(PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-			auth: {
-				autoRefreshToken: false,
-				persistSession: false
-			}
-		});
-
 		const { ticketId } = await request.json();
 
 		if (!ticketId) {
@@ -24,13 +11,10 @@ export const POST: RequestHandler = async ({ request }) => {
 		}
 
 		// 1. Verify ticket exists and is currently called
-		const { data: ticket, error: fetchError } = await adminClient
-			.from('tickets')
-			.select('*')
-			.eq('id', ticketId)
-			.single();
+		const [tickets]: any = await db.query('SELECT * FROM tickets WHERE id = ?', [ticketId]);
+		const ticket = tickets[0];
 
-		if (fetchError || !ticket) {
+		if (!ticket) {
 			return json({ error: 'Ticket not found' }, { status: 404 });
 		}
 
@@ -38,33 +22,17 @@ export const POST: RequestHandler = async ({ request }) => {
 			return json({ error: 'Ticket is not currently called' }, { status: 400 });
 		}
 
-		// 2. Update updated_at to trigger realtime event for the display
-		const { data: updatedTicket, error: updateError } = await adminClient
-			.from('tickets')
-			.update({ 
-				updated_at: new Date().toISOString()
-			})
-			.eq('id', ticketId)
-			.select()
-			.single();
+		// 2. Update updated_at to trigger polling update
+		const now = new Date();
+		await db.query(
+			'UPDATE tickets SET updated_at = ? WHERE id = ?',
+			[now, ticketId]
+		);
 
-		if (updateError) {
-			// If updated_at column doesn't exist or other error, fallback to updating called_at
-			console.warn('Could not update updated_at, falling back to called_at', updateError);
-			const { data: retryTicket, error: retryError } = await adminClient
-				.from('tickets')
-				.update({ 
-					called_at: new Date().toISOString() 
-				})
-				.eq('id', ticketId)
-				.select()
-				.single();
-				
-			if (retryError) throw retryError;
-			return json({ success: true, ticket: retryTicket });
-		}
+		// Return updated ticket
+		const [updatedTickets]: any = await db.query('SELECT * FROM tickets WHERE id = ?', [ticketId]);
 		
-		return json({ success: true, ticket: updatedTicket });
+		return json({ success: true, ticket: updatedTickets[0] });
 	} catch (error: any) {
 		console.error('Error recalling ticket:', error);
 		return json({ error: error.message || 'Internal server error' }, { status: 500 });

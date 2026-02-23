@@ -16,7 +16,6 @@
 		calculateServiceTime,
 		calculateWaitTime
 	} from '$lib/stores/queue';
-	import { supabase } from '$lib/supabase';
 	import { showSuccess, showError, showWarning, showInfo } from '$lib/stores/toast';
 
 	let activeTab = 'services';
@@ -72,7 +71,8 @@
 			await checkAuth();
 		}
 
-		if (!$userProfile || $userProfile.role !== 'admin') {
+		const prof = $userProfile;
+		if (!prof || prof.role !== 'admin') {
 			goto('/login');
 			return;
 		}
@@ -89,13 +89,10 @@
 
 	async function fetchSettings() {
 		try {
-			const { data, error } = await supabase
-				.from('app_settings')
-				.select('value')
-				.eq('key', 'display_video_url')
-				.single();
+			const response = await fetch('/api/settings?key=display_video_url');
+			const data = await response.json();
 			
-			if (data) {
+			if (data.value) {
 				currentVideoUrl = data.value;
 			}
 		} catch (error) {
@@ -105,12 +102,9 @@
 
 	async function fetchVideos() {
 		try {
-			const { data, error } = await supabase
-				.storage
-				.from('videos')
-				.list();
-			
-			if (error) throw error;
+			const response = await fetch('/api/videos');
+			if (!response.ok) throw new Error('Failed to fetch videos');
+			const data = await response.json();
 			videoList = data || [];
 		} catch (error) {
 			console.error('Error fetching videos:', error);
@@ -121,19 +115,18 @@
 	async function selectVideo(fileName: string) {
 		loadingVideo = true;
 		try {
-			const { data: { publicUrl } } = supabase.storage
-				.from('videos')
-				.getPublicUrl(fileName);
+			const publicUrl = `/uploads/${fileName}`;
 
-			const { error } = await supabase
-				.from('app_settings')
-				.upsert({ 
-					key: 'display_video_url', 
-					value: publicUrl,
-					updated_at: new Date().toISOString()
-				});
+			const response = await fetch('/api/settings', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					key: 'display_video_url',
+					value: publicUrl
+				})
+			});
 
-			if (error) throw error;
+			if (!response.ok) throw new Error('Failed to update settings');
 
 			currentVideoUrl = publicUrl;
 			showSuccess('Display video updated');
@@ -146,11 +139,11 @@
 
 	async function deleteVideo(fileName: string) {
 		confirmDelete(async () => {
-			const { error } = await supabase.storage
-				.from('videos')
-				.remove([fileName]);
+			const response = await fetch(`/api/videos/${fileName}`, {
+				method: 'DELETE'
+			});
 
-			if (error) throw error;
+			if (!response.ok) throw new Error('Failed to delete video');
 			
 			showSuccess('Video deleted successfully');
 			await fetchVideos();
@@ -175,11 +168,15 @@
 			const fileExt = videoFile.name.split('.').pop();
 			const fileName = `display-video-${Date.now()}.${fileExt}`;
 			
-			const { error: uploadError } = await supabase.storage
-				.from('videos')
-				.upload(fileName, videoFile);
+			const formData = new FormData();
+			formData.append('file', videoFile, fileName);
 
-			if (uploadError) throw uploadError;
+			const response = await fetch('/api/videos', {
+				method: 'POST',
+				body: formData
+			});
+
+			if (!response.ok) throw new Error('Failed to upload video');
 
 			showSuccess('Video uploaded successfully');
 			videoFile = null;
@@ -248,34 +245,34 @@
 		loading.service = true;
 		try {
 			if (editingService) {
-				const { error } = await supabase
-					.from('services')
-					.update(serviceForm)
-					.eq('id', editingService.id);
-				
-				if (error) throw error;
-				showSuccess('Service updated successfully');
-			} else {
-				// Check if code already exists
-				const { data: existing } = await supabase
-					.from('services')
-					.select('id')
-					.eq('code', serviceForm.code.trim().toUpperCase())
-					.single();
-				
-				if (existing) {
-					formErrors.service.code = 'This service code already exists';
-					loading.service = false;
-					showError('Service code already exists');
-					return;
-				}
-
-				const { error } = await supabase.from('services').insert({
-					...serviceForm,
-					code: serviceForm.code.trim().toUpperCase()
+				const response = await fetch(`/api/services/${editingService.id}`, {
+					method: 'PUT',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify(serviceForm)
 				});
 				
-				if (error) throw error;
+				if (!response.ok) {
+					const data = await response.json();
+					throw new Error(data.error || 'Failed to update service');
+				}
+				showSuccess('Service updated successfully');
+			} else {
+				const response = await fetch('/api/services', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify(serviceForm)
+				});
+				
+				if (!response.ok) {
+					const data = await response.json();
+					if (data.error === 'Service code already exists') {
+						formErrors.service.code = 'This service code already exists';
+						loading.service = false;
+						showError('Service code already exists');
+						return;
+					}
+					throw new Error(data.error || 'Failed to create service');
+				}
 				showSuccess('Service created successfully');
 			}
 			await fetchServices();
@@ -315,17 +312,22 @@
 		loading.counter = true;
 		try {
 			if (editingCounter) {
-				const { error } = await supabase
-					.from('counters')
-					.update(counterForm)
-					.eq('id', editingCounter.id);
+				const response = await fetch(`/api/counters/${editingCounter.id}`, {
+					method: 'PUT',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify(counterForm)
+				});
 				
-				if (error) throw error;
+				if (!response.ok) throw new Error('Failed to update counter');
 				showSuccess('Counter updated successfully');
 			} else {
-				const { error } = await supabase.from('counters').insert(counterForm);
+				const response = await fetch('/api/counters', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify(counterForm)
+				});
 				
-				if (error) throw error;
+				if (!response.ok) throw new Error('Failed to create counter');
 				showSuccess('Counter created successfully');
 			}
 			await fetchCounters();
@@ -391,8 +393,10 @@
 		}
 
 		confirmDelete(async () => {
-			const { error } = await supabase.from('services').delete().eq('id', id);
-			if (error) throw error;
+			const response = await fetch(`/api/services/${id}`, {
+				method: 'DELETE'
+			});
+			if (!response.ok) throw new Error('Failed to delete service');
 			await fetchServices();
 		}, `Are you sure you want to delete "${service?.name}"? This action cannot be undone.`);
 	}
@@ -407,8 +411,10 @@
 		}
 
 		confirmDelete(async () => {
-			const { error } = await supabase.from('counters').delete().eq('id', id);
-			if (error) throw error;
+			const response = await fetch(`/api/counters/${id}`, {
+				method: 'DELETE'
+			});
+			if (!response.ok) throw new Error('Failed to delete counter');
 			await fetchCounters();
 		}, `Are you sure you want to delete "${counter?.name}"? This action cannot be undone.`);
 	}
@@ -425,11 +431,10 @@
 
 		loading.reset = true;
 		confirmDelete(async () => {
-			const { error } = await supabase
-				.from('tickets')
-				.delete()
-				.gte('created_at', new Date().toISOString().split('T')[0]);
-			if (error) throw error;
+			const response = await fetch('/api/tickets/reset', {
+				method: 'POST'
+			});
+			if (!response.ok) throw new Error('Failed to reset queue');
 			await fetchTickets();
 			await loadStats();
 			loading.reset = false;
@@ -442,16 +447,14 @@
 	}
 
 	async function fetchUsers() {
-		const { data, error } = await supabase
-			.from('user_profiles')
-			.select('*')
-			.order('created_at', { ascending: false });
-		
-		if (error) {
+		try {
+			const response = await fetch('/api/users');
+			if (!response.ok) throw new Error('Failed to fetch users');
+			const data = await response.json();
+			allUsers = data.users || [];
+		} catch (error) {
 			console.error('Error fetching users:', error);
-			return;
 		}
-		allUsers = data || [];
 	}
 
 	function validateUserForm() {
@@ -481,19 +484,27 @@
 		loading.user = true;
 		try {
 			if (editingUser) {
-				const { error } = await supabase
-					.from('user_profiles')
-					.update({
-						name: userForm.name || null,
+				const response = await fetch(`/api/users/${editingUser.id}`, {
+					method: 'PUT',
+					headers: {
+						'Content-Type': 'application/json'
+					},
+					body: JSON.stringify({
+						email: userForm.email.trim(),
+						password: userForm.password || undefined,
+						name: userForm.name?.trim() || null,
 						role: userForm.role,
 						counter_id: userForm.counter_id || null
 					})
-					.eq('id', editingUser.id);
+				});
 				
-				if (error) throw error;
+				if (!response.ok) {
+					const data = await response.json();
+					throw new Error(data.error || 'Failed to update user');
+				}
 				showSuccess('User updated successfully');
 			} else {
-				const response = await fetch('/api/users/create', {
+				const response = await fetch('/api/users', {
 					method: 'POST',
 					headers: {
 						'Content-Type': 'application/json'
@@ -553,8 +564,10 @@
 		}
 
 		confirmDelete(async () => {
-			const { error } = await supabase.from('user_profiles').delete().eq('id', id);
-			if (error) throw error;
+			const response = await fetch(`/api/users/${id}`, {
+				method: 'DELETE'
+			});
+			if (!response.ok) throw new Error('Failed to delete user');
 			await fetchUsers();
 		}, `Are you sure you want to delete user "${user?.email}"? This will also delete their authentication account. This action cannot be undone.`);
 	}
@@ -1129,9 +1142,18 @@
 								</div>
 								{#if counter.is_active}
 									<button
-										on:click={() => {
-											supabase.from('counters').update({ is_active: false }).eq('id', counter.id);
-											fetchCounters();
+										on:click={async () => {
+											try {
+												const response = await fetch(`/api/counters/${counter.id}`, {
+													method: 'PUT',
+													headers: { 'Content-Type': 'application/json' },
+													body: JSON.stringify({ is_active: false })
+												});
+												if (!response.ok) throw new Error('Failed to update counter');
+												await fetchCounters();
+											} catch (error) {
+												console.error('Error deactivating counter:', error);
+											}
 										}}
 										class="btn-secondary w-full text-sm"
 									>
@@ -1139,9 +1161,18 @@
 									</button>
 								{:else}
 									<button
-										on:click={() => {
-											supabase.from('counters').update({ is_active: true }).eq('id', counter.id);
-											fetchCounters();
+										on:click={async () => {
+											try {
+												const response = await fetch(`/api/counters/${counter.id}`, {
+													method: 'PUT',
+													headers: { 'Content-Type': 'application/json' },
+													body: JSON.stringify({ is_active: true })
+												});
+												if (!response.ok) throw new Error('Failed to update counter');
+												await fetchCounters();
+											} catch (error) {
+												console.error('Error activating counter:', error);
+											}
 										}}
 										class="btn-primary w-full text-sm"
 									>

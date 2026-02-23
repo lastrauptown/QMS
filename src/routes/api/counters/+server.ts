@@ -1,35 +1,35 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { createClient } from '@supabase/supabase-js';
-import { PUBLIC_SUPABASE_URL } from '$env/static/public';
-import { SUPABASE_SERVICE_ROLE_KEY } from '$env/static/private';
+import { db } from '$lib/server/db';
+import { v4 as uuidv4 } from 'uuid';
 
 export const GET: RequestHandler = async () => {
 	try {
-		if (!SUPABASE_SERVICE_ROLE_KEY) {
-			return json({ error: 'Service role key not configured' }, { status: 500 });
-		}
-
-		const adminClient = createClient(PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-			auth: {
-				autoRefreshToken: false,
-				persistSession: false
-			}
-		});
-
-		const { data, error } = await adminClient
-			.from('counters')
-			.select('*')
-			.order('name');
-
-		if (error) {
-			console.error('Error fetching counters via admin:', error);
-			return json({ error: error.message }, { status: 500 });
-		}
-
-		return json({ counters: data });
+		const [rows] = await db.query('SELECT * FROM counters ORDER BY name');
+		return json({ counters: rows });
 	} catch (error: any) {
 		console.error('Server error fetching counters:', error);
+		return json({ error: error.message || 'Internal server error' }, { status: 500 });
+	}
+};
+
+export const POST: RequestHandler = async ({ request }) => {
+	try {
+		const { name, service_id, is_active } = await request.json();
+		
+		if (!name || !service_id) {
+			return json({ error: 'Name and Service are required' }, { status: 400 });
+		}
+
+		const id = uuidv4();
+		await db.query(
+			'INSERT INTO counters (id, name, service_id, is_active, created_at) VALUES (?, ?, ?, ?, NOW())',
+			[id, name, service_id, is_active]
+		);
+
+		return json({ success: true, id });
+	} catch (error: any) {
+		console.error('Error creating counter:', error);
 		return json({ error: error.message || 'Internal server error' }, { status: 500 });
 	}
 };

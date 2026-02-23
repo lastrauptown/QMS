@@ -11,7 +11,6 @@
 	} from '$lib/stores/queue';
 	import { playTicketSound, initAudio } from '$lib/stores/sound';
 	import { isLoading } from '$lib/stores/ui';
-	import { supabase } from '$lib/supabase';
 
 	let previousTickets = new Map();
 	let activeAnnouncements = new Map<string, AbortController>();
@@ -20,6 +19,7 @@
 	let hasInteracted = false;
 	let currentVideoUrl = '/BOYSEN Celso Episode 1 Celso - BOYSEN Paints (720p, h264).mp4'; // Default fallback
 	let retryInterval: any;
+	let settingsInterval: any;
 	let debugError = '';
 	let mounted = false;
 
@@ -62,10 +62,6 @@
 		console.log('Interaction detected, enabling audio');
 		initAudio();
 		
-		// Test TTS
-		// const u = new SpeechSynthesisUtterance("Audio enabled");
-		// window.speechSynthesis.speak(u);
-
 		if (videoElement) {
 			videoElement.muted = false;
 			// Ensure it's playing (in case autoplay failed or was paused)
@@ -127,25 +123,8 @@
 		try { await initializeRealtime(); } catch (e) { console.error('Error initializing realtime:', e); }
 		try { await fetchSettings(); } catch (e) { console.error('Error fetching settings:', e); }
 
-		// Subscribe to video settings changes
-		const settingsChannel = supabase
-			.channel('settings-updates')
-			.on(
-				'postgres_changes',
-				{
-					event: 'UPDATE',
-					schema: 'public',
-					table: 'app_settings',
-					filter: 'key=eq.display_video_url'
-				},
-				(payload) => {
-					if (payload.new && payload.new.value) {
-						console.log('Video updated:', payload.new.value);
-						currentVideoUrl = payload.new.value;
-					}
-				}
-			)
-			.subscribe();
+		// Poll for settings (video URL) updates every 30 seconds
+		settingsInterval = setInterval(fetchSettings, 30000);
 
 		currentTickets.subscribe((tickets) => {
 			// Clean up flashing for removed tickets
@@ -211,14 +190,13 @@
 
 	async function fetchSettings() {
 		try {
-			const { data } = await supabase
-				.from('app_settings')
-				.select('value')
-				.eq('key', 'display_video_url')
-				.single();
-			
-			if (data) {
-				currentVideoUrl = data.value;
+			const response = await fetch('/api/settings?key=display_video_url');
+			if (response.ok) {
+				const data = await response.json();
+				if (data.value && data.value !== currentVideoUrl) {
+					console.log('Video updated:', data.value);
+					currentVideoUrl = data.value;
+				}
 			}
 		} catch (error) {
 			console.error('Error fetching settings:', error);
@@ -236,9 +214,8 @@
 
 	onDestroy(() => {
 		if (retryInterval) clearInterval(retryInterval);
+		if (settingsInterval) clearInterval(settingsInterval);
 		activeAnnouncements.forEach(c => c.abort());
-		// Cleanup subscriptions
-		supabase.channel('settings-updates').unsubscribe();
 	});
 
 	function getCurrentTicket(counterId: string): string {
@@ -397,27 +374,60 @@
 			{/if}
 			<div class="absolute bottom-4 right-4 z-20 flex gap-2">
 				<button 
-					class="bg-white/20 hover:bg-white/30 backdrop-blur-md text-white px-3 py-1 rounded text-xs"
+					class="bg-black/50 hover:bg-black/70 text-white p-2 rounded-full backdrop-blur-sm transition-colors"
 					on:click={() => {
-						playTicketSound();
-						announceTicket('A-001', 'Counter Test');
+						if (videoElement) {
+							videoElement.muted = !videoElement.muted;
+						}
 					}}
 				>
-					Test Audio
+					<svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+						{#if videoElement && videoElement.muted}
+							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />
+						{:else}
+							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+						{/if}
+					</svg>
 				</button>
 			</div>
+			<!-- svelte-ignore a11y-media-has-caption -->
 			<video
 				bind:this={videoElement}
 				src={currentVideoUrl}
 				class="w-full h-full object-cover"
 				autoplay
 				loop
-				muted={!hasInteracted}
+				muted
 				playsinline
-			>
-				<track kind="captions" />
-			</video>
+			></video>
 		</div>
 	</main>
 </div>
 
+<style>
+	:global(body) {
+		overflow: hidden;
+	}
+	
+	/* Hide scrollbar for Chrome, Safari and Opera */
+	.scrollbar-hide::-webkit-scrollbar {
+		display: none;
+	}
+
+	/* Hide scrollbar for IE, Edge and Firefox */
+	.scrollbar-hide {
+		-ms-overflow-style: none;  /* IE and Edge */
+		scrollbar-width: none;  /* Firefox */
+	}
+
+	.bg-forest-green {
+		background-color: #2e7d32;
+	}
+	.border-forest-green {
+		border-color: #2e7d32;
+	}
+	.text-forest-green {
+		color: #2e7d32;
+	}
+</style>

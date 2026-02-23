@@ -1,22 +1,9 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { createClient } from '@supabase/supabase-js';
-import { PUBLIC_SUPABASE_URL } from '$env/static/public';
-import { SUPABASE_SERVICE_ROLE_KEY } from '$env/static/private';
+import { db } from '$lib/server/db';
 
 export const POST: RequestHandler = async ({ request }) => {
 	try {
-		if (!SUPABASE_SERVICE_ROLE_KEY) {
-			return json({ error: 'Service role key not configured' }, { status: 500 });
-		}
-
-		const adminClient = createClient(PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-			auth: {
-				autoRefreshToken: false,
-				persistSession: false
-			}
-		});
-
 		const { ticketId } = await request.json();
 
 		if (!ticketId) {
@@ -24,40 +11,28 @@ export const POST: RequestHandler = async ({ request }) => {
 		}
 
 		// 1. Get ticket to find counter
-		const { data: ticket, error: fetchError } = await adminClient
-			.from('tickets')
-			.select('counter_id')
-			.eq('id', ticketId)
-			.single();
+		const [tickets]: any = await db.query('SELECT counter_id FROM tickets WHERE id = ?', [ticketId]);
+		const ticket = tickets[0];
 
-		if (fetchError || !ticket) {
+		if (!ticket) {
 			return json({ error: 'Ticket not found' }, { status: 404 });
 		}
 
 		// 2. Update ticket status
-		const { data: updatedTicket, error: updateError } = await adminClient
-			.from('tickets')
-			.update({
-				status: 'skipped'
-			})
-			.eq('id', ticketId)
-			.select()
-			.single();
-
-		if (updateError) {
-			console.error('Update error:', updateError);
-			return json({ error: 'Failed to skip ticket' }, { status: 500 });
-		}
+		await db.query(
+			'UPDATE tickets SET status = ? WHERE id = ?',
+			['skipped', ticketId]
+		);
 
 		// 3. Clear counter current ticket
 		if (ticket.counter_id) {
-			await adminClient
-				.from('counters')
-				.update({ current_ticket: null })
-				.eq('id', ticket.counter_id);
+			await db.query('UPDATE counters SET current_ticket = NULL WHERE id = ?', [ticket.counter_id]);
 		}
 
-		return json({ ticket: updatedTicket });
+		// Fetch updated ticket
+		const [updatedTickets]: any = await db.query('SELECT * FROM tickets WHERE id = ?', [ticketId]);
+
+		return json({ ticket: updatedTickets[0] });
 	} catch (error: any) {
 		console.error('Error skipping ticket:', error);
 		return json({ error: error.message || 'Internal server error' }, { status: 500 });

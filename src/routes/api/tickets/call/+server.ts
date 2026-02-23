@@ -1,22 +1,9 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { createClient } from '@supabase/supabase-js';
-import { PUBLIC_SUPABASE_URL } from '$env/static/public';
-import { SUPABASE_SERVICE_ROLE_KEY } from '$env/static/private';
+import { db } from '$lib/server/db';
 
 export const POST: RequestHandler = async ({ request }) => {
 	try {
-		if (!SUPABASE_SERVICE_ROLE_KEY) {
-			return json({ error: 'Service role key not configured' }, { status: 500 });
-		}
-
-		const adminClient = createClient(PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-			auth: {
-				autoRefreshToken: false,
-				persistSession: false
-			}
-		});
-
 		const { ticketId, counterId } = await request.json();
 
 		if (!ticketId || !counterId) {
@@ -24,38 +11,31 @@ export const POST: RequestHandler = async ({ request }) => {
 		}
 
 		// 1. Auto-complete any currently serving ticket for this counter
-		// This ensures we don't leave "zombie" tickets if the user forgets to click Complete
-		await adminClient
-			.from('tickets')
-			.update({
-				status: 'served',
-				served_at: new Date().toISOString()
-			})
-			.eq('counter_id', counterId)
-			.eq('status', 'called');
+		await db.query(
+			'UPDATE tickets SET status = ?, served_at = NOW() WHERE counter_id = ? AND status = ?',
+			['served', counterId, 'called']
+		);
 
 		// 2. Update new ticket status to 'called'
-		const { data: updatedTicket, error: updateError } = await adminClient
-			.from('tickets')
-			.update({
-				status: 'called',
-				counter_id: counterId,
-				called_at: new Date().toISOString()
-			})
-			.eq('id', ticketId)
-			.select()
-			.single();
+		const now = new Date();
+		await db.query(
+			'UPDATE tickets SET status = ?, counter_id = ?, called_at = ? WHERE id = ?',
+			['called', counterId, now, ticketId]
+		);
 
-		if (updateError) {
-			console.error('Call ticket error:', updateError);
+		// Fetch updated ticket
+		const [tickets]: any = await db.query('SELECT * FROM tickets WHERE id = ?', [ticketId]);
+		const updatedTicket = tickets[0];
+
+		if (!updatedTicket) {
 			return json({ error: 'Failed to call ticket' }, { status: 500 });
 		}
 
 		// 3. Update counter display
-		await adminClient
-			.from('counters')
-			.update({ current_ticket: updatedTicket.ticket_number })
-			.eq('id', counterId);
+		await db.query(
+			'UPDATE counters SET current_ticket = ? WHERE id = ?',
+			[updatedTicket.ticket_number, counterId]
+		);
 
 		return json({ ticket: updatedTicket });
 	} catch (error: any) {

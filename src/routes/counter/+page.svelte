@@ -2,6 +2,7 @@
 	import { onMount, onDestroy } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { userProfile, signOut, checkAuth } from '$lib/stores/auth';
+	import { get } from 'svelte/store';
 	import {
 		tickets,
 		counters,
@@ -33,16 +34,18 @@
 	let timerInterval: any;
 	let showTransferModal = false;
 	let selectedTransferCounter = '';
+	let controllerWindow: Window | null = null;
 
 	onMount(async () => {
 		isLoading.set(true);
 		timerInterval = setInterval(updateElapsedTime, 1000);
 		try {
-			if (!$userProfile) {
+			if (!get(userProfile)) {
 				await checkAuth();
 			}
 
-			if (!$userProfile || ($userProfile.role !== 'counter_staff' && $userProfile.role !== 'admin')) {
+			const prof = get(userProfile);
+			if (!prof || (prof.role !== 'counter_staff' && prof.role !== 'admin')) {
 				goto('/login');
 				return;
 			}
@@ -54,10 +57,13 @@
 				initializeRealtime()
 			]);
 
-			if ($userProfile.counter_id) {
-				currentCounter = $counters.find((c) => c.id === $userProfile.counter_id);
+			if (prof.counter_id) {
+				currentCounter = $counters.find((c) => c.id === prof.counter_id);
 				if (currentCounter) {
 					currentService = $services.find((s) => s.id === currentCounter.service_id);
+				}
+				if (currentCounter?.id) {
+					localStorage.setItem('activeCounterId', currentCounter.id);
 				}
 				loadNextTicket();
 				loadHistory();
@@ -100,6 +106,9 @@
 		currentCounter = $counters.find((c) => c.id === counterId);
 		if (currentCounter) {
 			currentService = $services.find((s) => s.id === currentCounter.service_id);
+			if (currentCounter?.id) {
+				localStorage.setItem('activeCounterId', currentCounter.id);
+			}
 			loadNextTicket();
 			loadHistory();
 			loadStats();
@@ -195,12 +204,28 @@
 		return service?.code || '';
 	}
 
+	
+
+	function openController() {
+		const features = [
+			'width=380',
+			'height=520',
+			'menubar=no',
+			'toolbar=no',
+			'location=no',
+			'status=no',
+			'scrollbars=yes'
+		].join(',');
+		controllerWindow = window.open('/counter/controller', 'counter_controller', features);
+	}
+
 	async function handleCallNext() {
 		if (!nextTicket || !currentCounter || processing) return;
 
 		processing = true;
 		try {
-			await callTicket(nextTicket.id, currentCounter.id);
+			const toCall = nextTicket;
+			await callTicket(toCall.id, currentCounter.id);
 			playTicketSound();
 			await fetchTickets();
 		} catch (error: any) {
@@ -231,7 +256,8 @@
 
 		processing = true;
 		try {
-			await recallTicket(lastCalled.id);
+			const toRecall = lastCalled;
+			await recallTicket(toRecall.id);
 			playTicketSound();
 			await fetchTickets();
 		} catch (error: any) {
@@ -311,6 +337,7 @@
 
 	async function handleLogout() {
 		await signOut();
+		localStorage.removeItem('activeCounterId');
 		goto('/login');
 	}
 </script>
@@ -336,11 +363,20 @@
 					</div>
 					{#if currentCounter}
 						<span class="text-sm bg-white/20 px-3 py-1 rounded">{currentCounter.name}</span>
+						{#if currentService}
+							<span class="text-xs bg-white/10 px-3 py-1 rounded border border-white/20">
+								{currentService.name} ({currentService.code})
+							</span>
+						{/if}
 					{/if}
 				</div>
-				<button on:click={handleLogout} class="text-sm hover:underline">Logout</button>
+				<div class="flex items-center gap-3">
+					<button on:click={handleLogout} class="text-sm hover:underline">Logout</button>
+				</div>
 			</div>
 		</header>
+
+		
 
 		<main class="px-8 py-8 max-w-6xl mx-auto">
 			{#if currentCounter}
@@ -381,10 +417,15 @@
 								<p class="text-gray-500 text-sm mt-1">Called at {new Date(current.called_at).toLocaleTimeString()}</p>
 							</div>
 							<div class="text-right">
-								<p class="text-sm text-gray-500">Elapsed Time</p>
-								<p class="text-4xl font-mono font-bold text-forest-green animate-pulse">
-									{elapsedString}
-								</p>
+								<div class="flex items-center justify-end gap-2">
+									<button on:click={openController} class="text-xs bg-green-50 text-forest-green px-3 py-1 rounded border border-forest-green/30 hover:bg-green-100 transition-colors">
+										Open Controller
+									</button>
+									<div class="text-right">
+										<p class="text-sm text-gray-500">Elapsed Time</p>
+										<p class="text-4xl font-mono font-bold text-forest-green animate-pulse">{elapsedString}</p>
+									</div>
+								</div>
 							</div>
 						</div>
 						
@@ -410,7 +451,12 @@
 
 				<!-- Next Ticket Card -->
 				<div class="card mb-8 {currentCounter.is_active ? '' : 'opacity-50 grayscale pointer-events-none'}">
-					<h2 class="text-2xl font-bold text-gray-900 mb-4">Next Ticket</h2>
+					<div class="flex items-center justify-between mb-4">
+						<h2 class="text-2xl font-bold text-gray-900">Next Ticket</h2>
+						<button on:click={openController} class="text-xs bg-green-50 text-forest-green px-3 py-1 rounded border border-forest-green/30 hover:bg-green-100 transition-colors">
+							Open Controller
+						</button>
+					</div>
 					{#if nextTicket}
 						<div class="text-center py-8">
 							<p class="text-gray-600 mb-2">Ticket Number</p>
